@@ -1,49 +1,100 @@
 #include <algorithm>
 #include <iostream>
+#include <string>
 #include <vector>
 
-template <typename T>
-std::istream& operator >>(std::istream& input, std::vector<T>& v)
-{
-    for (T& a : v)
-        input >> a;
-
-    return input;
-}
-
-class Hash {
-    static constexpr size_t N = 100000;
-    static constexpr unsigned P = 1000000123;
-    static constexpr unsigned M = (1u << 31) - 1;
-
-    static std::vector<unsigned> powers_;
-
+class SuffixArray {
 public:
-    explicit Hash(const std::vector<char>& s)
+    explicit SuffixArray(const std::string& s)
+        : s_(s)
     {
-        const size_t n = s.size();
+        const size_t n = s_.length();
 
-        powers_.reserve(1 + n);
-        while (powers_.size() <= n)
-            powers_.push_back(1ull * powers_.back() * P % M);
-
-        data_.resize(1 + n);
+        p_.resize(n);
         for (size_t i = 0; i < n; ++i)
-            data_[1 + i] = (data_[i] + 1ull * s[i] * powers_[i]) % M;
+            p_[i] = i;
+
+        std::sort(p_.begin(), p_.end(), [this](size_t x, size_t y) { return s_[x] < s_[y]; });
+
+        std::vector<unsigned> c(n);
+        for (size_t i = 1; i < n; ++i)
+            c[p_[i]] = c[p_[i-1]] + (s_[p_[i]] != s_[p_[i-1]]);
+
+        for (unsigned k = 1; k < n; k *= 2) {
+            for (size_t i = 0; i < n; ++i)
+                p_[i] = (p_[i] - k + n) % n;
+
+            sort(p_, c);
+
+            std::vector<unsigned> q(n);
+            {
+                size_t x = p_[0];
+                for (const size_t y : p_) {
+                    q[y] = q[x] + (c[y] != c[x] || c[(y + k) % n] != c[(x + k) % n]);
+                    x = y;
+                }
+            }
+            c = std::move(q);
+        }
+
+        lcp_.resize(n);
+        for (size_t i = 0, k = 0; i < n - 1; ++i) {
+            if (k > 0)
+                --k;
+
+            const size_t j = p_[c[i] - 1];
+            while (s_[i+k] == s_[j+k])
+                ++k;
+
+            lcp_[c[i]] = k;
+        }
     }
 
-    unsigned select(size_t i, size_t k) const
+    std::pair<size_t, size_t> search() const
     {
-        const uint64_t h = (M + data_[i + k] - data_[i]) % M;
-        return h * powers_[data_.size() - i - k] % M;
+        const size_t n = p_.size(), m = n / 2;
+
+        std::pair<size_t, size_t> p = { 0, 0 };
+        for (size_t i = 1; i < n; ++i) {
+            const size_t x = p_[i-1], y = p_[i];
+            if ((x < m) == (y < m))
+                continue;
+
+            if (lcp_[i] > p.second) {
+                p.first = x;
+                p.second = lcp_[i];
+            }
+        }
+        return p;
     }
 
 private:
-    std::vector<unsigned> data_;
+    static void sort(std::vector<size_t>& p, const std::vector<unsigned>& c)
+    {
+        const size_t n = p.size();
 
-}; // class Hasher
+        std::vector<unsigned> x(1 + n);
+        for (size_t i = 0; i < n; ++i)
+            ++x[1 + c[i]];
 
-std::vector<unsigned> Hash::powers_ = { 1 };
+        for (size_t i = 1; i < n; ++i)
+            x[i] += x[i-1];
+
+        std::vector<size_t> q(n);
+        {
+            for (const size_t i : p)
+                q[x[c[i]]++] = i;
+        }
+        p = std::move(q);
+    }
+
+private:
+    const std::string& s_;
+
+    std::vector<size_t> p_;
+    std::vector<unsigned> lcp_;
+
+}; // class SuffixArray
 
 int main()
 {
@@ -53,45 +104,17 @@ int main()
     size_t n;
     std::cin >> n;
 
-    std::vector<char> s(n), t(n);
+    std::string s, t;
     std::cin >> s >> t;
 
-    const Hash hs(s), ht(t);
+    s.push_back('#');
+    s += t;
+    s.push_back(' ');
 
-    const auto check = [&](size_t k) {
-        std::vector<std::pair<unsigned, size_t>> c(n - k + 1);
-        for (size_t i = 0; i + k <= n; ++i)
-            c[i] = std::make_pair(ht.select(i, k), i);
+    SuffixArray sa(s);
 
-        std::sort(c.begin(), c.end());
-
-        for (size_t i = 0; i + k <= n; ++i) {
-            const unsigned h = hs.select(i, k);
-
-            const auto it = std::lower_bound(c.begin(), c.end(), h, [&](const auto& x, unsigned v) {
-                return x.first < v;
-            });
-            if (it != c.end() && it->first == h && std::equal(s.begin() + i, s.begin() + i + k, t.begin() + it->second))
-                return i;
-        }
-        return n;
-    };
-
-    size_t x = n, lb = 0, ub = n + 1;
-    while (lb + 1 < ub) {
-        const size_t mid = (lb + ub) / 2;
-
-        const size_t p = check(mid);
-        if (p < n) {
-            x = p;
-            lb = mid;
-        } else {
-            ub = mid;
-        }
-    }
-
-    for (size_t i = 0; i < lb; ++i)
-        std::cout << s[x + i];
+    const auto p = sa.search();
+    std::cout << s.substr(p.first, p.second) << '\n';
 
     return 0;
 }
