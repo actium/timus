@@ -2,116 +2,228 @@
 #include <string>
 #include <vector>
 
-class LongInteger {
-public:
-    LongInteger()
-        : data_(1)
-    {}
+#include <cassert>
+#include <cstdint>
 
-    explicit LongInteger(const std::string& value)
-    {
-        data_.reserve(value.length() + 1);
-        for (auto it = value.rbegin(); it != value.rend(); ++it)
-            data_.push_back(*it - '0');
+namespace long_arithmetic {
 
-        normalize();
-    }
+    class integer {
+        using storage_type = std::vector<uint32_t>;
 
-    explicit operator std::string() const
-    {
-        std::string value;
-        value.reserve(data_.size());
-        for (auto it = data_.rbegin(); it != data_.rend(); ++it)
-            value.push_back('0' + *it);
+    public:
+        integer()
+            : digits_(1)
+        {}
 
-        return value;
-    }
+        template <typename T>
+        integer(T value)
+        {
+            for (size_t i = 0; i < (sizeof(T) + sizeof(uint32_t) - 1) / sizeof(uint32_t); ++i) {
+                digits_.push_back(value);
+                value >>= 32;
+            }
 
-    LongInteger& operator ++()
-    {
-        data_.push_back(0);
-        for (size_t i = 0; ++data_[i] == 10; ++i)
-            data_[i] = 0;
+            if constexpr (std::is_signed_v<T>)
+                return;
 
-        normalize();
-        return *this;
-    }
+            if (digits_.back() >= uint32_t(1) << 31)
+                digits_.push_back(0);
+        }
 
-    LongInteger& operator --()
-    {
-        for (size_t i = 0; data_[i]-- == 0; ++i)
-            data_[i] = 9;
+        integer& operator +=(const integer& rhs)
+        {
+            extend_sign(digits_, std::max(digits_.size(), rhs.digits_.size()) + 1);
+            add(digits_, rhs.digits_);
+            drop_redundant_sign_extension(digits_);
+            return *this;
+        }
 
-        normalize();
-        return *this;
-    }
+        integer& operator *=(const integer& rhs)
+        {
+            storage_type product(digits_.size() + rhs.digits_.size() + 1);
+            multiply(digits_, rhs.digits_, product);
+            if (static_cast<int32_t>(digits_.back() ^ rhs.digits_.back()) < 0)
+                negate(product);
+            else
+                drop_redundant_sign_extension(product);
+            digits_.swap(product);
+            return *this;
+        }
 
-    LongInteger& operator +=(const LongInteger& rhs)
-    {
-        const size_t n = data_.size(), m = rhs.data_.size();
+        explicit operator std::string() const
+        {
+            storage_type digits = digits_;
+            if (is_negative(digits_))
+                negate(digits);
 
-        data_.resize(std::max(n, m) + 1);
-        for (size_t i = 0; i < m; ++i) {
-            data_[i] += rhs.data_[i];
-            if (data_[i] > 9) {
-                data_[i] -= 10;
-                ++data_[i + 1];
+            std::string value;
+            do {
+                uint64_t carry = 0;
+                for (auto it = digits.rbegin(); it != digits.rend(); ++it) {
+                    carry <<= 32;
+                    carry += *it;
+                    *it = carry / 1000000000;
+                    carry %= 1000000000;
+                }
+
+                for (size_t i = 0; i < 9; ++i) {
+                    value.push_back('0' + carry % 10);
+                    carry /= 10;
+                }
+
+                drop_redundant_sign_extension(digits);
+            } while (digits.size() > 1 || digits[0] != 0);
+
+            while (value.length() > 1 && value.back() == '0')
+                value.pop_back();
+
+            if (is_negative(digits_))
+                value.push_back('-');
+
+            for (int i = 0, j = value.size() - 1; i < j; ++i, --j)
+                std::swap(value[i], value[j]);
+
+            return value;
+        }
+
+    private:
+        explicit integer(storage_type digits)
+            : digits_(std::move(digits))
+        {}
+
+        static bool is_negative(const storage_type& digits)
+        {
+            return static_cast<int32_t>(digits.back()) < 0;
+        }
+
+        static void extend_sign(storage_type& digits, size_t target_size)
+        {
+            digits.resize(target_size, is_negative(digits) ? ~uint32_t(0) : 0);
+        }
+
+        static void drop_redundant_sign_extension(storage_type& digits)
+        {
+            for (size_t n = digits.size(); n > 1; --n) {
+                if (digits.back() != 0 && digits.back() != ~uint32_t(0))
+                    break;
+
+                if (static_cast<int32_t>(digits[n-2] ^ digits[n-1]) < 0)
+                    break;
+
+                digits.pop_back();
             }
         }
-        for (size_t i = m; data_[i] > 9; ++i) {
-            data_[i] -= 10;
-            ++data_[i + 1];
+
+        static void negate(storage_type& digits)
+        {
+            extend_sign(digits, digits.size() + 1);
+
+            uint64_t carry = 1;
+            for (auto it = digits.begin(); it != digits.end(); ++it) {
+                carry += ~*it;
+                *it = carry;
+                carry >>= 32;
+            }
+
+            drop_redundant_sign_extension(digits);
         }
 
-        normalize();
-        return *this;
-    }
+        template <typename F>
+        static void add(storage_type& lhs, size_t rhs_size, uint32_t rhs_sign_extension, F&& rhs_getter, unsigned delta)
+        {
+            assert(lhs.size() >= rhs_size);
 
-    LongInteger& operator *=(const LongInteger& rhs)
-    {
-        const size_t n = data_.size(), m = rhs.data_.size();
+            uint64_t sum = delta;
+            for (size_t i = 0; i < rhs_size; ++i) {
+                sum += lhs[i];
+                sum += rhs_getter(i);
+                lhs[i] = sum;
+                sum >>= 32;
+            }
 
-        std::vector<uint8_t> product(n + m);
-        for (size_t i = 0; i < n; ++i) {
-            for (size_t j = 0; j < m; ++j) {
-                const unsigned c = product[i + j];
-                const unsigned v = data_[i] * rhs.data_[j] + c;
-
-                product[i + j] = v % 10;
-                product[i + j + 1] += v / 10;
+            for (size_t i = rhs_size; i < lhs.size(); ++i) {
+                sum += lhs[i];
+                sum += rhs_sign_extension;
+                lhs[i] = sum;
+                sum >>= 32;
             }
         }
 
-        std::swap(data_, product);
-        normalize();
-        return *this;
-    }
+        static void add(storage_type& lhs, const storage_type& rhs)
+        {
+            add(lhs, rhs.size(), is_negative(rhs) ? ~uint32_t(0) : 0, [&](size_t i) {
+                return rhs[i];
+            }, 0);
+        }
 
-private:
-    void normalize()
+        static void multiply(const storage_type& lhs, const storage_type& rhs, storage_type& product)
+        {
+            const size_t n = lhs.size(), m = rhs.size();
+
+            uint64_t digit_l = is_negative(lhs);
+            for (size_t i = 0; i < n; ++i) {
+                digit_l += is_negative(lhs) ? ~lhs[i] : lhs[i];
+                if (digit_l == 0)
+                    continue;
+
+                uint64_t digit_r = is_negative(rhs);
+                for (size_t j = 0; j < m; ++j) {
+                    digit_r += is_negative(rhs) ? ~rhs[j] : rhs[j];
+                    if (digit_r == 0)
+                        continue;
+
+                    uint64_t p = static_cast<uint32_t>(digit_l);
+                    p *= static_cast<uint32_t>(digit_r);
+
+                    uint64_t c = static_cast<uint32_t>(p);
+                    c += product[i+j];
+                    product[i+j] = c;
+
+                    c >>= 32;
+                    c += p >> 32;
+                    c += product[i+j+1];
+                    product[i+j+1] = c;
+
+                    product[i+j+2] += c >> 32;
+
+                    digit_r >>= 32;
+                }
+                digit_l >>= 32;
+            }
+        }
+
+    private:
+        storage_type digits_;
+
+    }; // class integer
+
+    std::ostream& operator <<(std::ostream& output, const integer& value)
     {
-        while (data_.back() == 0 && data_.size() > 1)
-            data_.pop_back();
+        return output << static_cast<std::string>(value);
     }
 
-private:
-    std::vector<uint8_t> data_;
+    integer operator +(integer lhs, const integer& rhs)
+    {
+        return lhs += rhs;
+    }
 
-}; // class LongInteger
+    integer operator *(integer lhs, const integer& rhs)
+    {
+        return lhs *= rhs;
+    }
 
-std::ostream& operator <<(std::ostream& output, const LongInteger& value)
-{
-    return output << static_cast<std::string>(value);
-}
+} // namespace long_arithmetic
 
-LongInteger solve(unsigned n, unsigned s)
+using long_arithmetic::integer;
+
+integer solve(unsigned n, unsigned s)
 {
     if (s > 900 || s % 2 != 0)
-        return LongInteger();
+        return 0;
 
-    LongInteger c[n][s + 10];
+    integer c[n][s + 10];
     for (unsigned d = 0; d <= 9; ++d)
-        ++c[0][d];
+        c[0][d] += 1;
 
     for (unsigned i = 1; i < n; ++i) {
         for (unsigned d = 0; d <= 9; ++d) {
@@ -120,7 +232,7 @@ LongInteger solve(unsigned n, unsigned s)
         }
     }
 
-    LongInteger k = c[n-1][s/2];
+    integer k = c[n-1][s/2];
     k *= k;
     return k;
 }

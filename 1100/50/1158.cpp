@@ -3,51 +3,175 @@
 #include <string>
 #include <vector>
 
-class Integer {
-public:
-    Integer()
-        : Integer(0)
-    {}
+#include <cassert>
+#include <cstdint>
 
-    Integer(unsigned value)
-        : value_(std::to_string(value))
-    {}
+namespace long_arithmetic {
 
-    Integer& operator +=(const Integer& rhs)
-    {
-        const size_t n = std::max(value_.length(), rhs.value_.length());
+    class integer {
+        using storage_type = std::vector<uint32_t>;
 
-        value_.resize(n + 1, '0');
-        for (size_t i = 0; i < rhs.value_.length(); ++i) {
-            const unsigned d = (value_[i] - '0') + (rhs.value_[i] - '0');
-            value_[i] = '0' + d % 10;
-            value_[i+1] += d / 10;
+    public:
+        integer()
+            : digits_(1)
+        {}
+
+        template <typename T>
+        integer(T value)
+        {
+            for (size_t i = 0; i < (sizeof(T) + sizeof(uint32_t) - 1) / sizeof(uint32_t); ++i) {
+                digits_.push_back(value);
+                value >>= 32;
+            }
+
+            if constexpr (std::is_signed_v<T>)
+                return;
+
+            if (digits_.back() >= uint32_t(1) << 31)
+                digits_.push_back(0);
         }
-        for (size_t i = rhs.value_.length(); i < n && value_[i] > '9'; ++i) {
-            value_[i] = '0';
-            ++value_[i+1];
+
+        integer& operator +=(const integer& rhs)
+        {
+            extend_sign(digits_, std::max(digits_.size(), rhs.digits_.size()) + 1);
+            add(digits_, rhs.digits_);
+            drop_redundant_sign_extension(digits_);
+            return *this;
         }
 
-        if (value_.back() == '0')
-            value_.pop_back();
+        bool operator ==(const integer& rhs) const
+        {
+            const size_t n = digits_.size();
+            if (rhs.digits_.size() != n)
+                return false;
 
-        return *this;
-    }
+            if (static_cast<int32_t>(digits_.back() ^ rhs.digits_.back()) < 0)
+                return false;
 
-    bool operator ==(const Integer& rhs) const
+            for (size_t i = 0; i < n; ++i) {
+                if (digits_[i] != rhs.digits_[i])
+                    return false;
+            }
+            return true;
+        }
+
+        explicit operator std::string() const
+        {
+            storage_type digits = digits_;
+            if (is_negative(digits_))
+                negate(digits);
+
+            std::string value;
+            do {
+                uint64_t carry = 0;
+                for (auto it = digits.rbegin(); it != digits.rend(); ++it) {
+                    carry <<= 32;
+                    carry += *it;
+                    *it = carry / 1000000000;
+                    carry %= 1000000000;
+                }
+
+                for (size_t i = 0; i < 9; ++i) {
+                    value.push_back('0' + carry % 10);
+                    carry /= 10;
+                }
+
+                drop_redundant_sign_extension(digits);
+            } while (digits.size() > 1 || digits[0] != 0);
+
+            while (value.length() > 1 && value.back() == '0')
+                value.pop_back();
+
+            if (is_negative(digits_))
+                value.push_back('-');
+
+            for (int i = 0, j = value.size() - 1; i < j; ++i, --j)
+                std::swap(value[i], value[j]);
+
+            return value;
+        }
+
+    private:
+        explicit integer(storage_type digits)
+            : digits_(std::move(digits))
+        {}
+
+        static bool is_negative(const storage_type& digits)
+        {
+            return static_cast<int32_t>(digits.back()) < 0;
+        }
+
+        static void extend_sign(storage_type& digits, size_t target_size)
+        {
+            digits.resize(target_size, is_negative(digits) ? ~uint32_t(0) : 0);
+        }
+
+        static void drop_redundant_sign_extension(storage_type& digits)
+        {
+            for (size_t n = digits.size(); n > 1; --n) {
+                if (digits.back() != 0 && digits.back() != ~uint32_t(0))
+                    break;
+
+                if (static_cast<int32_t>(digits[n-2] ^ digits[n-1]) < 0)
+                    break;
+
+                digits.pop_back();
+            }
+        }
+
+        static void negate(storage_type& digits)
+        {
+            extend_sign(digits, digits.size() + 1);
+
+            uint64_t carry = 1;
+            for (auto it = digits.begin(); it != digits.end(); ++it) {
+                carry += ~*it;
+                *it = carry;
+                carry >>= 32;
+            }
+
+            drop_redundant_sign_extension(digits);
+        }
+
+        template <typename F>
+        static void add(storage_type& lhs, size_t rhs_size, uint32_t rhs_sign_extension, F&& rhs_getter, unsigned delta)
+        {
+            assert(lhs.size() >= rhs_size);
+
+            uint64_t sum = delta;
+            for (size_t i = 0; i < rhs_size; ++i) {
+                sum += lhs[i];
+                sum += rhs_getter(i);
+                lhs[i] = sum;
+                sum >>= 32;
+            }
+
+            for (size_t i = rhs_size; i < lhs.size(); ++i) {
+                sum += lhs[i];
+                sum += rhs_sign_extension;
+                lhs[i] = sum;
+                sum >>= 32;
+            }
+        }
+
+        static void add(storage_type& lhs, const storage_type& rhs)
+        {
+            add(lhs, rhs.size(), is_negative(rhs) ? ~uint32_t(0) : 0, [&](size_t i) {
+                return rhs[i];
+            }, 0);
+        }
+
+    private:
+        storage_type digits_;
+
+    }; // class integer
+
+    std::ostream& operator <<(std::ostream& output, const integer& value)
     {
-        return value_ == rhs.value_;
+        return output << static_cast<std::string>(value);
     }
 
-private:
-    std::string value_;
-
-    friend std::ostream& operator <<(std::ostream& output, const Integer& v)
-    {
-        return output << std::string(v.value_.rbegin(), v.value_.rend());
-    }
-
-}; // class Integer
+} // namespace long_arithmetic
 
 void simplify(std::vector<std::string>& words)
 {
@@ -70,6 +194,8 @@ void simplify(std::vector<std::string>& words)
 }
 
 class Automaton {
+    using integer = long_arithmetic::integer;
+
     struct Node {
         int parent;
         unsigned label;
@@ -106,14 +232,14 @@ public:
         }
     }
 
-    Integer count_words(unsigned length)
+    integer count_words(unsigned length)
     {
         const unsigned state_count = nodes_.size();
 
-        std::vector<Integer> counts(state_count);
+        std::vector<integer> counts(state_count);
         counts[0] = 1;
         for (unsigned i = 0; i < length; ++i) {
-            std::vector<Integer> next_counts(state_count + 1);
+            std::vector<integer> next_counts(state_count + 1);
             for (unsigned j = 0; j < state_count; ++j) {
                 if (counts[j] == 0)
                     continue;
@@ -127,7 +253,7 @@ public:
             counts = std::move(next_counts);
         }
 
-        Integer k = 0;
+        integer k = 0;
         for (unsigned i = 0; i < state_count; ++i)
             k += counts[i];
 
@@ -164,7 +290,7 @@ private:
 
 }; // class Automaton
 
-Integer solve(unsigned n, unsigned l, const std::vector<std::string>& words)
+long_arithmetic::integer solve(unsigned n, unsigned l, const std::vector<std::string>& words)
 {
     return Automaton(l, words).count_words(n);
 }
