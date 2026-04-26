@@ -1,172 +1,106 @@
 #include <iostream>
-#include <queue>
 #include <vector>
-
-#include <cassert>
 
 using graph_t = std::vector<std::vector<size_t>>;
 
-struct Sieve {
-    const unsigned upper_bound;
+class Matching {
+public:
+    explicit Matching(size_t p_size)
+        : graph_(p_size)
+        , matches_(p_size, -1)
+    {}
 
-    std::vector<unsigned> smallest_prime_factors;
-    std::vector<unsigned> primes;
-
-    explicit Sieve(unsigned upper_bound)
-        : upper_bound(upper_bound)
-        , smallest_prime_factors(1 + upper_bound)
+    void add_edge(size_t u, size_t v)
     {
-        for (unsigned i = 2; i <= upper_bound; ++i) {
-            if (smallest_prime_factors[i] == 0) {
-                smallest_prime_factors[i] = i;
-                primes.push_back(i);
-            }
-
-            for (const unsigned p : primes) {
-                if (p > smallest_prime_factors[i] || i * p > upper_bound)
-                    break;
-
-                smallest_prime_factors[i * p] = p;
-            }
-        }
+        graph_[u].push_back(v);
     }
 
-    bool test_primality(unsigned n) const
+    const std::vector<int> operator ()()
     {
-        if (n <= upper_bound)
-            return n != 0 && smallest_prime_factors[n] == n;
+        const size_t p_size = graph_.size();
 
-        assert(upper_bound >= n / upper_bound && "number is too big");
-
-        for (const unsigned p : primes) {
-            if (p * p > n)
-                break;
-
-            if (n % p == 0)
-                return false;
+        for (size_t i = 0; i < p_size; ++i) {
+            std::vector<bool> used(p_size);
+            search(i, used);
         }
-        return n > 1;
+        return matches_;
     }
-};
 
-const Sieve soe(2000000);
+private:
+    bool search(size_t u, std::vector<bool>& used)
+    {
+        if (used[u])
+            return false;
 
-void search(const graph_t& g, std::vector<unsigned>& times, std::vector<size_t>& parents, std::vector<size_t>& mates, size_t root)
+        used[u] = true;
+
+        for (const size_t v : graph_[u]) {
+            if (matches_[v] == -1 || search(matches_[v], used)) {
+                matches_[v] = u;
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    std::vector<std::vector<size_t>> graph_;
+    std::vector<int> matches_;
+
+}; // class Matching
+
+bool test_primality(unsigned x)
 {
-    const size_t n = g.size();
-
-    std::vector<unsigned> labels(n);
-
-    std::vector<size_t> origins(n);
-    for (size_t i = 0; i < n; ++i)
-        origins[i] = i;
-
-    static unsigned aux_time = 0;
-
-    const auto lca = [&](size_t u, size_t v) {
-        ++aux_time;
-
-        while (u == 0 || times[u] != aux_time) {
-            times[u] = aux_time;
-            u = (mates[u] == 0 ? 0 : origins[parents[mates[u]]]);
-            std::swap(u, v);
-        }
-        return u;
-    };
-
-    std::queue<size_t> q;
-
-    const auto enqueue = [&](size_t u) {
-        q.push(u);
-        labels[u] = 1;
-    };
-
-    const auto blossom = [&](size_t u, size_t v, size_t x) {
-        while (origins[u] != x) {
-            parents[u] = v;
-            v = mates[u];
-
-            origins[u] = x;
-            u = parents[v];
-
-            origins[v] = x;
-            if (labels[v] == 2)
-                enqueue(v);
-        }
-    };
-
-    const auto augment = [&](size_t u) {
-        do {
-            const size_t p = parents[u];
-            const size_t v = mates[p];
-            mates[u] = p;
-            mates[p] = u;
-            u = v;
-        } while (u != 0);
-    };
-
-    enqueue(root);
-    while (!q.empty()) {
-        const size_t u = q.front();
-        q.pop();
-
-        for (const size_t v : g[u]) {
-            if (labels[v] == 0) {
-                parents[v] = u;
-                if (mates[v] == 0)
-                    return augment(v);
-
-                enqueue(mates[v]);
-                labels[v] = 2;
-            }
-            if (labels[v] == 1 && origins[u] != origins[v]) {
-                const size_t x = lca(origins[u], origins[v]);
-                blossom(v, u, x);
-                blossom(u, v, x);
-            }
-        }
+    for (unsigned i = 2; i * i <= x; ++i) {
+        if (x % i == 0)
+            return false;
     }
+    return x != 1;
 }
 
 void solve(const std::vector<unsigned>& c)
 {
     const size_t n = c.size();
 
-    graph_t g(1+n);
-    for (size_t i = 1; i < n; ++i) {
-        for (size_t j = 0; j < i; ++j) {
-            if (soe.test_primality(c[i] + c[j])) {
-                g[1+i].push_back(1+j);
-                g[1+j].push_back(1+i);
-            }
+    std::vector<size_t> p[3];
+    for (size_t i = 0; i < n; ++i) {
+        const size_t x = c[i] % 2 + (c[i] == 1);
+        p[x].push_back(i);
+    }
+
+    const size_t p_size = std::max(p[0].size(), p[1].size());
+    for (size_t i = 0; i < 2; ++i) {
+        while (!p[2].empty() && p[i].size() < p_size) {
+            p[i].push_back(p[2].back());
+            p[2].pop_back();
         }
     }
 
-    std::vector<size_t> mates(1+n);
-    {
-        std::vector<unsigned> times(1+n);
-        std::vector<size_t> parents(1+n);
-
-        for (size_t i = 1; i <= n; ++i) {
-            if (mates[i] == 0)
-                search(g, times, parents, mates, i);
+    Matching matching(p_size);
+    for (size_t i = 0; i < p[0].size(); ++i) {
+        for (size_t j = 0; j < p[1].size(); ++j) {
+            if (test_primality(c[p[0][i]] + c[p[1][j]]))
+                matching.add_edge(i, j);
         }
     }
+
+    const auto matches = matching();
 
     std::vector<std::pair<unsigned, unsigned>> s;
-    for (size_t i = 1; i <= n; ++i) {
-        if (mates[i] != 0) {
-            s.emplace_back(i, mates[i]);
-            mates[mates[i]] = 0;
-        }
+    for (size_t i = 0; i < p_size; ++i) {
+        if (matches[i] != -1)
+            s.emplace_back(p[0][matches[i]], p[1][i]);
     }
 
-    if (2 * s.size() < n) {
+    for (size_t i = 1; i < p[2].size(); i += 2)
+        s.emplace_back(p[2][i-1], p[2][i]);
+
+    if (2 * s.size() != n) {
         std::cout << "NO" << '\n';
     } else {
         std::cout << "YES" << '\n';
         for (const auto& [u, v] : s)
-            std::cout << c[u-1] << ' ' << c[v-1] << '\n';
+            std::cout << c[u] << ' ' << c[v] << '\n';
     }
 }
 
